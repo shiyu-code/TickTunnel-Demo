@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>1-min Real-time Table</title>
+  <style>table{border-collapse:collapse}th,td{border:1px solid #999;padding:4px 8px}</style>
+</head>
+<body>
+<h3>1-min K 线（每秒刷新）</h3>
+<table id="tb">
+  <thead>
+    <tr><th>symbol</th><th>ts</th><th>open</th><th>high</th><th>low</th><th>close</th><th>volume</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<script>
+const ws = new WebSocket("ws://127.0.0.1:9002/ws");
+const tb = document.querySelector('#tb tbody');
+const map = new Map(); // symbol -> tr
+
+ws.onmessage = ev => {
+  const j = JSON.parse(ev.data);
+  let tr = map.get(j.symbol);
+  if (!tr) {
+    tr = document.createElement('tr');
+    map.set(j.symbol, tr);
+    tb.appendChild(tr);
+  }
+  tr.innerHTML = `<td>${j.symbol}</td><td>${new Date(j.ts*1000).toLocaleTimeString()}</td>`
+               + `<td>${j.open.toFixed(5)}</td><td>${j.high.toFixed(5)}</td>`
+               + `<td>${j.low.toFixed(5)}</td><td>${j.close.toFixed(5)}</td><td>${j.volume}</td>`;
+};
+</script>
+</body>
+</html>
