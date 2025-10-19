@@ -101,8 +101,10 @@ void broadcast(const json& j)
 // ---------- 后台聚合 ----------
 void consumer_thread()
 {
-    std::map<std::string, json> acc;
+    std::map<std::string, json> acc;           // second-level accumulation per symbol
+    std::map<std::string, json> minbars;       // minute-level accumulation per symbol
     int64_t last_sec = 0;
+    int64_t current_minute = 0;
     json j;
     while (true)
     {
@@ -112,36 +114,63 @@ void consumer_thread()
             const std::string& sym = j["symbol"];
             if (ts != last_sec && last_sec != 0)
             {
+                // finalize previous second → update minute accumulator
+                int64_t sec_minute = (last_sec / 60) * 60;
+                if (current_minute == 0) current_minute = sec_minute;
+                if (sec_minute != current_minute)
+                {
+                    // minute switch: flush minbars of previous minute to DB and broadcast
+                    for (auto it = minbars.begin(); it != minbars.end(); ++it)
+                    {
+                        const std::string& s = it->first;
+                        json& bar = it->second;
+                        if (bar.is_null() || !bar.contains("open")) continue;
+                        try
+                        {
+                            char sql[512];
+                            snprintf(sql, sizeof(sql),
+                                "INSERT INTO bar_1min(symbol,ts,open,high,low,close,volume) "
+                                "VALUES('%s',%lld,%.5f,%.5f,%.5f,%.5f,%lld);",
+                                s.c_str(), static_cast<long long>(current_minute),
+                                bar["open"].get<double>(), bar["high"].get<double>(),
+                                bar["low"].get<double>(), bar["close"].get<double>(),
+                                static_cast<long long>(bar["volume"].get<int64_t>()));
+                            char* err = nullptr;
+                            sqlite3_exec(g_db, sql, nullptr, nullptr, &err);
+                            if (err) { std::cerr << "SQL err:" << err << '\n'; sqlite3_free(err); }
+                            broadcast(bar);
+                        }
+                        catch (const std::exception& e)
+                        {
+                            std::cerr << "broadcast exception: " << e.what() << '\n';
+                        }
+                    }
+                    minbars.clear();
+                    current_minute = sec_minute;
+                }
+
+                // second-level to minute-level accumulation
                 for (auto it = acc.begin(); it != acc.end(); ++it)
                 {
                     const std::string& s = it->first;
                     json& bar = it->second;
                     if (bar.is_null() || !bar.contains("open")) continue;
-                    try
+                    auto& mb = minbars[s];
+                    if (mb.empty())
+                        mb = { {"symbol", s}, {"ts", current_minute}, {"open", bar["open"]}, {"high", bar["high"]}, {"low", bar["low"]}, {"close", bar["close"]}, {"volume", bar["volume"]} };
+                    else
                     {
-                        char sql[512];
-                        snprintf(sql, sizeof(sql),
-                            "INSERT INTO tick_1min(symbol,ts,open,high,low,close,volume) "
-                            "VALUES('%s',%lld,%.5f,%.5f,%.5f,%.5f,%lld);",
-                            s.c_str(), static_cast<long long>(last_sec),
-                            bar["open"].get<double>(), bar["high"].get<double>(),
-                            bar["low"].get<double>(), bar["close"].get<double>(),
-                            static_cast<long long>(bar["volume"].get<int64_t>()));
-                        char* err = nullptr;
-                        sqlite3_exec(g_db, sql, nullptr, nullptr, &err);
-                        if (err) { std::cerr << "SQL err:" << err << '\n'; sqlite3_free(err); }
-                        broadcast(bar);
-                    }
-                    catch (const std::exception& e)
-                    {
-                        std::cerr << "broadcast exception: " << e.what() << '\n';
+                        mb["high"] = std::max(mb["high"].get<double>(), bar["high"].get<double>());
+                        mb["low"]  = std::min(mb["low"].get<double>(),  bar["low"].get<double>());
+                        mb["close"] = bar["close"];
+                        mb["volume"] = mb["volume"].get<int64_t>() + bar["volume"].get<int64_t>();
                     }
                 }
                 acc.clear();
             }
             auto& bar = acc[sym];
             if (bar.empty())
-                bar = { {"symbol",sym}, {"ts",ts}, {"open",j["close"]}, {"high",j["high"]}, {"low",j["low"]}, {"close",j["close"]}, {"volume",j["volume"]} };
+                bar = { {"symbol", sym}, {"ts", ts}, {"open", j["close"]}, {"high", j["high"]}, {"low", j["low"]}, {"close", j["close"]}, {"volume", j["volume"]} };
             else
             {
                 bar["high"] = std::max(bar["high"].get<double>(), j["high"].get<double>());
@@ -278,6 +307,7 @@ int main()
             return 1;
         }
         sqlite3_exec(g_db, "CREATE TABLE IF NOT EXISTS tick_1min(symbol TEXT, ts INT, open REAL, high REAL, low REAL, close REAL, volume INT);", nullptr, nullptr, nullptr);
+        sqlite3_exec(g_db, "CREATE TABLE IF NOT EXISTS bar_1min(symbol TEXT, ts INT, open REAL, high REAL, low REAL, close REAL, volume INT);", nullptr, nullptr, nullptr);
 
         // 2. WebSocket
         g_wss.init_asio();

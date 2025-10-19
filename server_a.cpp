@@ -43,13 +43,21 @@ public:
     tcp::socket socket_;
     asio::streambuf read_buf_;
     std::queue<std::string> q_;
+    asio::strand<asio::any_io_executor> strand_;
     std::atomic<bool> writing_{ false };
 
-    explicit session(tcp::socket s) : socket_(std::move(s)) {}
+    explicit session(tcp::socket s) : socket_(std::move(s)), strand_(socket_.get_executor()) {}
 
     void start() { do_read(); }
 
     void deliver(std::string frame)
+    {
+        asio::post(strand_, [self = shared_from_this(), frame = std::move(frame)]() mutable {
+            self->do_deliver(std::move(frame));
+        });
+    }
+
+    void do_deliver(std::string frame)
     {
         frame += '\n';
         bool was_idle = writing_.exchange(true, std::memory_order_acquire) == false;
@@ -69,19 +77,20 @@ public:
     {
         if (q_.empty()) { writing_.store(false, std::memory_order_release); return; }
         asio::async_write(socket_, asio::buffer(q_.front()),
-            [self = shared_from_this()](error_code ec, std::size_t) {
-                if (!ec)
-                {
-                    self->q_.pop();
-                    self->do_write();
-                }
-                else
-                {
-                    std::cerr << "async_write failed: " << ec.message() << '\n';
-                    self->socket_.close();
-                    self->writing_.store(false, std::memory_order_release);
-                }
-            });
+            asio::bind_executor(strand_,
+                [self = shared_from_this()](error_code ec, std::size_t) {
+                    if (!ec)
+                    {
+                        self->q_.pop();
+                        self->do_write();
+                    }
+                    else
+                    {
+                        std::cerr << "async_write failed: " << ec.message() << '\n';
+                        self->socket_.close();
+                        self->writing_.store(false, std::memory_order_release);
+                    }
+                }));
     }
 };
 
