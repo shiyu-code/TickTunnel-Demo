@@ -1,4 +1,4 @@
-# MarketBridge (MarketServer)
+# MarketBridge (TickTunnel)
 
 一个以 C++ 实现的模拟交易所与中间处理层的端到端流式系统：
 - 交易所 A（TCP Server，9001）每秒随机选取 100–300 个品种（S0001…S1000），每品种推送 2 次行情帧。
@@ -14,7 +14,7 @@
 
 ## 目录结构
 ```
-MarketServer/
+TickTunnel/
 ├── CMakeLists.txt
 ├── server_a.cpp        # 交易所 A：TCP Server + 行情生成 + 帧签名
 ├── server_b.cpp        # 中间层 B：TCP Client + 聚合 + SQLite + WebSocket/HTTP
